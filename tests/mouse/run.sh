@@ -2,12 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 mouse_test_dir=$(mktemp -d /tmp/nook-mouse-tests.XXXXXX)
-swiftc -swift-version 5 -warnings-as-errors -target "$(uname -m)-apple-macos14.2" \
-  Nook/Core/SyntheticInput.swift store/plugins/mouse/native/MouseEventState.swift \
-  store/plugins/mouse/native/MouseConfig.swift store/plugins/mouse/native/MouseActions.swift \
-  store/plugins/mouse/native/MouseFixService.swift store/plugins/mouse/native/MouseScroller.swift \
+trap 'rm -rf "$mouse_test_dir"' EXIT
+plugin_dir="$PWD/store/plugins/mouse"
+python3 "$plugin_dir/verify-upstream.py"
+source "$plugin_dir/build-native.sh"
+export NOOK_MOUSE_SWIFT_OPTIMIZATION=-Onone
+native_sources=()
+for native_source in "$plugin_dir"/native/*.swift; do
+  [[ "$(basename "$native_source")" == main.swift ]] || native_sources+=( "$native_source" )
+done
+build_mouse_native "$(uname -m)" "$mouse_test_dir/native" "$mouse_test_dir/objects" \
+  Nook/Core/SyntheticInput.swift "${native_sources[@]}" \
   Nook/Core/HotkeyMonitor.swift Nook/Core/ShortcutGesture.swift \
-  tests/mouse/Stubs.swift tests/mouse/NativeTests.swift -o "$mouse_test_dir/native"
+  tests/mouse/*.swift
 "$mouse_test_dir/native"
 node --check store/plugins/mouse/main.js
 npm install --prefix "$mouse_test_dir" --no-save --package-lock=false --silent jsdom@26.1.0

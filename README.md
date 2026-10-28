@@ -88,7 +88,7 @@ The project is generated from `project.yml`. Official builds are signed with Mot
 ## Credits
 
 - Dictation follows the pipeline of [FreeFlow](https://github.com/zachlatta/freeflow) (MIT) — Groq Whisper + LLM cleanup — and can import your FreeFlow key, prompt and vocabulary.
-- The Mouse tab is a from-scratch Swift implementation inspired by what [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) does for scroll wheels and extra buttons. No MMF code is used (it's under its own [MMF License](https://github.com/noah-nuebling/mac-mouse-fix/blob/master/License)); if you want the full-featured app, go and support it.
+- Mouse engine source attribution and license details are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). See `store/plugins/mouse/ENGINE-INTEGRATION.md` for implementation and verification notes.
 - Built with SwiftUI, AppKit, WebKit and Core Audio process taps.
 
 ## License

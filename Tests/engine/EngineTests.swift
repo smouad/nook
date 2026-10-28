@@ -198,7 +198,7 @@ private final class Locked<T>: @unchecked Sendable {
                 }
             }, log: { if $0.contains("exited") { exited.signal() } },
             launcher: CommandLine.arguments.count > 2 ? URL(fileURLWithPath: CommandLine.arguments[2]) : nil)
-        weak var released = helper
+        weak let released = helper
         helper?.start()
         try expect(ready.wait(timeout: .now() + 5) == .success && pid.withValue { $0 > 0 }, "Released-owner helper starts")
         helper?.stop(); helper = nil // Match registry removal before Process delivers its termination callback.

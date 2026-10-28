@@ -2,39 +2,77 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 
+protocol ScrollFrameDriver: AnyObject {
+    var isRunning: Bool { get }
+    func start() -> Bool
+    func stop()
+}
+
+
+// The scrolling model (tick analysis, acceleration, fast scroll, the constant-speed-then-drag glide that restarts on
+// every tick, cancelling on a tick the other way) is adapted from Mac Mouse Fix by Noah Nuebling
+// (https://github.com/noah-nuebling/mac-mouse-fix, MMF License), translated to Swift.
+
 /// Turns a mouse wheel's clicks into smooth, pixel-based scrolling.
 ///
-/// Every click adds distance to a pool; each frame moves a slice of what's left, so the scroll eases out. A click
-/// the other way drops the pool, so scrolling reverses at once. Trackpads and Magic Mouse send continuous events,
-/// which are left alone.
-///
-/// Output is plain pixel scroll events with no gesture/momentum phases: apps handle those as ordinary scrolling, and
-/// there's no phase state for an app to get confused by when you scroll fast or change your mind mid-glide.
+/// Every tick is analysed (how fast the wheel is spinning, how many quick swipes in a row) to decide how far it scrolls.
+/// That distance, plus whatever is left of the previous glide, becomes a new glide: constant speed for a moment, then a
+/// drag curve that eases out, so a click doesn't feel like a jump and a spin carries on a little. A tick the other
+/// way stops the glide (and is swallowed). Trackpads and Magic Mouse send continuous events, which are left alone.
 ///
 /// State is only touched from the event tap's thread; the display link just hands frames over to it.
 final class MouseScroller {
     private let config: () -> MouseConfig
-    private var remainingY = 0.0, remainingX = 0.0
-    private var carryY = 0.0, carryX = 0.0 // fractions of a pixel not yet sent
-    private var scrolling = false
-    private var lineCarryY = 0.0, lineCarryX = 0.0 // fractions of a line not yet sent
-    private let source = CGEventSource(stateID: .hidSystemState)
-    private var lastTick: CFAbsoluteTime = 0
-    private var tickRate = 0.0 // wheel clicks per second, smoothed
-    private var lastFrame: CFAbsoluteTime = 0
-    private var flags: CGEventFlags = []
+    private var analyzer = MouseScrollAnalyzer()
+    private var mode = ScrollProfile.Mode.normal
+    private var profile = ScrollProfile.make(MouseConfig(), mode: .normal, horizontal: false, screenPixels: 1080)
+    private let scrollOutput: ScrollOutput
+    private let gestureOutput = GestureOutput()
+    private let gestureSink: GlideOutput?
+    private let clock: () -> Double
+    private let frameDriver: ScrollFrameDriver?
+    private lazy var output: GlideOutput = scrollOutput
+
+    private struct Glide {
+        var vector: (y: Double, x: Double) // everything this glide scrolls
+        var curve: ScrollGlide
+        var start: Double
+        var lastValue = 0.0
+        var lastFrame: Double
+        var gestureUntil: Double // until then the glide is the "fingers down" gesture, not momentum
+        var speed = 0.0 // px/s of the last frame; 0 until a frame has moved
+        var started = false // the first frame has been sent
+    }
+    private var glide: Glide?
+    private var pixelY = BiasedSubPixelator(), pixelX = BiasedSubPixelator()
+    private var lastTick = -Double.infinity
+    private var horizontalOverride = false
+    private var display = (width: 1920.0, height: 1080.0)
+
     private var frames: CVDisplayLink? // ticks once per screen refresh, so apps get one event per frame
+    private var idleUntil = 0.0 // the display link stays up until then after a scroll, so the next one starts without delay
     private var activity: NSObjectProtocol?
     private var framePending = false
     private let pendingLock = NSLock()
 
-    private static let pixelsPerTick = 70.0
-    private static let maxTicksPerEvent = 6.0 // the system bundles fast spins into bigger deltas; cap a runaway wheel
+    /// The "fingers down" part of a glide lasts at least this long after each tick; later it can turn into momentum.
+    private static let gestureHold = 0.16
+    private static let frameTime = 1.0 / 60
+    private static let linkIdle = 0.75
 
-    init(config: @escaping () -> MouseConfig) { self.config = config }
+    init(config: @escaping () -> MouseConfig, scrollOutput: ScrollOutput = ScrollOutput(),
+         gestureOutput: GlideOutput? = nil, clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+         frameDriver: ScrollFrameDriver? = nil) {
+        self.config = config
+        self.scrollOutput = scrollOutput
+        self.gestureSink = gestureOutput
+        self.clock = clock
+        self.frameDriver = frameDriver
+    }
 
     /// Call on the thread whose run loop drives the animation.
     func start() {
+        guard frameDriver == nil else { return }
         guard let runLoop = CFRunLoopGetCurrent() else { return }
         var link: CVDisplayLink?
         guard CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess, let link else { return }
@@ -51,11 +89,13 @@ final class MouseScroller {
         frames = nil
     }
 
+    /// Stops the glide where it is, telling apps the swipe was cancelled so they don't coast on their own.
     func cancelScroll() {
-        scrolling = false
-        remainingY = 0; remainingX = 0
-        carryY = 0; carryX = 0
-        lineCarryY = 0; lineCarryX = 0
+        if glide != nil { output.cancel() }
+        glide = nil
+        output.reset()
+        pixelY.reset(); pixelX.reset()
+        idleUntil = 0
         stopFrames()
     }
 
@@ -75,11 +115,15 @@ final class MouseScroller {
 
     /// Drive the animation from the screen the pointer is on. False if frames can't be produced.
     private func startFrames() -> Bool {
+        if let frameDriver { return frameDriver.start() }
         guard let frames else { return false }
         if CVDisplayLinkIsRunning(frames) { return true }
-        var display = CGDirectDisplayID(), count: UInt32 = 0
-        CGGetDisplaysWithPoint(CGEvent(source: nil)?.location ?? .zero, 1, &display, &count)
-        if count > 0 { CVDisplayLinkSetCurrentCGDisplay(frames, display) }
+        var id = CGDirectDisplayID(), count: UInt32 = 0
+        CGGetDisplaysWithPoint(CGEvent(source: nil)?.location ?? .zero, 1, &id, &count)
+        if count > 0 {
+            CVDisplayLinkSetCurrentCGDisplay(frames, id)
+            display = (Double(CGDisplayPixelsWide(id)), Double(CGDisplayPixelsHigh(id)))
+        }
         guard CVDisplayLinkStart(frames) == kCVReturnSuccess else { return false }
         activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
                                                         reason: "Animating mouse scroll")
@@ -87,6 +131,7 @@ final class MouseScroller {
     }
 
     private func stopFrames() {
+        frameDriver?.stop()
         if let frames, CVDisplayLinkIsRunning(frames) { CVDisplayLinkStop(frames) }
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = nil
@@ -95,57 +140,137 @@ final class MouseScroller {
     // MARK: Input
 
     /// Returns nil when the event was consumed, or the event (possibly edited) to pass on.
-    func handle(_ event: CGEvent) -> Unmanaged<CGEvent>? {
-        guard event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return Unmanaged.passUnretained(event) }
+    /// - held: what the wheel should do because a mapped mouse button is held ("zoom", "horizontal", "quick"…).
+    func handle(_ event: CGEvent, held: String? = nil) -> Unmanaged<CGEvent>? {
+        let pass = Unmanaged.passUnretained(event)
+        // Only a plain, one-axis wheel: trackpads, Magic Mouse, tablets and our own events carry phases or pixels.
+        guard event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0,
+              event.getIntegerValueField(.scrollWheelEventScrollPhase) == 0,
+              event.getIntegerValueField(.tabletEventDeviceID) == 0,
+              !(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) != 0 && event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2) != 0)
+        else { return pass }
         let c = config()
         var outFlags = event.flags
 
-        var dy = Self.ticks(event, axis: 1), dx = Self.ticks(event, axis: 2)
-        let swapAxes = Self.active(c.horizontalModifier, in: outFlags)
-        if swapAxes {
-            swap(&dy, &dx)
-            outFlags.subtract(Self.mask(c.horizontalModifier))
+        var dy = Self.tick(event, axis: 1), dx = Self.tick(event, axis: 2)
+        guard dy != 0 || dx != 0 else { return pass }
+        // Each effect comes from a held mouse button or from a modifier key; a used modifier is hidden from the app.
+        func wanted(_ name: String, _ modifier: String) -> Bool {
+            if held == name { return true }
+            guard Self.active(modifier, in: outFlags) else { return false }
+            outFlags.subtract(Self.mask(modifier))
+            return true
         }
-        var factor = c.speed
-        if Self.active(c.preciseModifier, in: outFlags) {
-            factor *= 0.25
-            outFlags.subtract(Self.mask(c.preciseModifier))
-        }
-        if Self.active(c.quickModifier, in: outFlags) {
-            factor *= 3
-            outFlags.subtract(Self.mask(c.quickModifier))
-        }
+        let swapAxes = wanted("horizontal", c.horizontalModifier)
+        if swapAxes { swap(&dy, &dx) }
+        let gesture = held.flatMap(ScrollProfile.Mode.init) ?? (wanted("zoom", c.zoomModifier) ? .zoom : nil)
+        let quick = gesture == nil && wanted("quick", c.quickModifier)
+        let precise = gesture == nil && !quick && wanted("precise", c.preciseModifier)
         if c.reverse { dy = -dy; dx = -dx }
 
-        // Without smoothing, or if frames can't be produced, hand the wheel's own event on (edited) rather than eat it.
-        guard c.smoothness != "off", startFrames() else {
+        let newMode: ScrollProfile.Mode = gesture ?? (quick ? .quick : precise ? .precise : .normal)
+        if newMode != mode || swapAxes != horizontalOverride {
             cancelScroll()
+            mode = newMode
+            horizontalOverride = swapAxes
+            analyzer.reset()
+        }
+        let nextProfile = ScrollProfile.make(c, mode: mode, horizontal: dy == 0, screenPixels: dy == 0 ? display.width : display.height)
+        if glide != nil, !mode.isGesture, profile.sendsGesture != nextProfile.sendsGesture {
+            // Close an in-flight trackpad gesture before changing its output format.
+            cancelScroll()
+            analyzer.reset()
+        }
+        profile = nextProfile
+
+        // Unanimated scrolling still uses MMF's acceleration and fast-scroll analysis. Only a failed
+        // display link falls back to the original wheel event.
+        let cold = !(frameDriver?.isRunning ?? frames.map { CVDisplayLinkIsRunning($0) } ?? false)
+        guard !profile.animated || startFrames() else {
+            cancelScroll()
+            let factor = c.speed * (precise ? 0.25 : 1) * (quick ? 3 : 1)
             return passThrough(event, swapAxes: swapAxes, reverse: c.reverse, factor: factor, flags: outFlags)
         }
 
-        let now = CFAbsoluteTimeGetCurrent()
-        let gap = now - lastTick
-        if MouseWheelReversal.shouldFilter(dy: dy, dx: dx, remainingY: remainingY, remainingX: remainingX,
-                                          gap: gap, filterChatter: c.filterChatter) { return nil }
-        lastTick = now
-        tickRate = gap > 0.4 ? 0 : tickRate * 0.6 + min(60, 1 / max(gap, 0.001)) * 0.4
-        let boost = 1 + c.acceleration * 3 * min(1, max(0, (tickRate - 6) / 24))
-        let distance = Self.pixelsPerTick * factor * boost
+        let now = clock()
+        let time = Self.seconds(of: event) ?? now
+        let direction = dy != 0 ? (dy > 0 ? 1 : 3) : (dx > 0 ? 2 : 4) // upstream MFDirection up/right/down/left
+        let remaining = remainingVector()
+        if MouseWheelReversal.shouldFilter(dy: dy, dx: dx, remainingY: remaining.y, remainingX: remaining.x,
+                                          gap: time - lastTick, filterChatter: c.filterChatter) { return nil }
+        lastTick = time
 
-        if dy != 0 {
-            MouseWheelReversal.prepare(delta: dy, remaining: &remainingY, carry: &carryY, lineCarry: &lineCarryY)
-            remainingY += max(-Self.maxTicksPerEvent, min(Self.maxTicksPerEvent, dy)) * distance
+        // Starting the display link refreshes its display dimensions.
+        profile = ScrollProfile.make(c, mode: mode, horizontal: dy == 0, screenPixels: dy == 0 ? display.width : display.height)
+        analyzer.tickIntervalMax = profile.tickIntervalMax
+        analyzer.swipeMaxInterval = profile.swipeMaxInterval
+        analyzer.swipeMinTickSpeed = profile.swipeMinTickSpeed
+        analyzer.primesInterval = profile.primesInterval
+        let analysis = analyzer.update(time: time, direction: direction)
+
+        // A tick the other way while scrolling stops the scroll, and that tick does nothing else.
+        if !profile.usesSystemSpeed, analysis.directionChanged, let glide, glide.speed > 0 {
+            cancelScroll()
+            return nil
         }
-        if dx != 0 {
-            MouseWheelReversal.prepare(delta: dx, remaining: &remainingX, carry: &carryX, lineCarry: &lineCarryX)
-            remainingX += max(-Self.maxTicksPerEvent, min(Self.maxTicksPerEvent, dx)) * distance
+
+        let pixels: Double
+        if profile.usesSystemSpeed {
+            let inputAxis = swapAxes ? (dy == 0 ? 1 : 2) : (dy == 0 ? 2 : 1)
+            let field: CGEventField = inputAxis == 1 ? .scrollWheelEventPointDeltaAxis1 : .scrollWheelEventPointDeltaAxis2
+            pixels = abs(Double(event.getIntegerValueField(field)))
+        } else {
+            pixels = floor(floor(profile.acceleration.pixels(forTickInterval: analysis.tickInterval))
+                * (profile.speedup?.factor(swipes: Double(analysis.swipeCounter + 1)) ?? 1))
         }
-        flags = outFlags
-        if !scrolling {
-            scrolling = true
-            carryY = 0; carryX = 0
-            lineCarryY = 0; lineCarryX = 0
-            lastFrame = now
+        let sign = (dy != 0 ? dy : dx) > 0 ? 1.0 : -1.0
+        if !profile.animated {
+            cancelScroll()
+            scrollOutput.swipe = false
+            scrollOutput.flags = outFlags
+            scrollOutput.invertedFromDevice = true
+            scrollOutput.emitUnanimated(y: dy != 0 ? Int64(sign * pixels) : 0,
+                                        x: dy == 0 ? Int64(sign * pixels) : 0)
+            return nil
+        }
+
+        var left = remaining
+        let freshSwipe = analysis.tickCounter == 0 && analysis.swipeCounter == 0
+        if glide == nil || freshSwipe {
+            pixelY.reset(); pixelX.reset()
+            if freshSwipe { left = (0, 0) } // a new swipe doesn't inherit the old one's leftovers
+        }
+        let vector = (y: left.y + (dy != 0 ? sign * pixels : 0), x: left.x + (dy == 0 ? sign * pixels : 0))
+        let distance = hypot(vector.y, vector.x)
+        guard distance >= 1 else { return nil }
+
+        let baseDuration = profile.baseDuration(analysis.tickInterval)
+        let controlPoints = profile.speedSmoothing.map {
+            ScrollGlide.speedSmoothingControlPoints(amount: $0, currentSpeed: glide?.speed ?? 0,
+                                                   distance: distance, baseDuration: baseDuration)
+        } ?? profile.baseControlPoints
+        let curve = ScrollGlide(distance: distance, baseDuration: baseDuration,
+                                dragA: profile.dragA, dragB: profile.dragB, stopSpeed: profile.stopSpeed,
+                                baseControlPoints: controlPoints, useDrag: profile.useDrag)
+        let wasRunning = glide != nil
+        if !wasRunning {
+            output = mode.isGesture ? (gestureSink ?? gestureOutput) : scrollOutput
+            output.reset()
+            scrollOutput.invertedFromDevice = true
+            gestureOutput.inverted = true
+            gestureOutput.kind = mode.gestureKind ?? .zoom
+        }
+        scrollOutput.swipe = profile.sendsGesture
+        scrollOutput.flags = outFlags
+        glide = Glide(vector: vector, curve: curve, start: glide?.lastFrame ?? time, lastValue: 0,
+                      lastFrame: glide?.lastFrame ?? now, gestureUntil: now + Self.gestureHold,
+                      speed: glide?.speed ?? 0, started: glide?.started ?? false)
+        if cold {
+            // A display link takes a few frames to deliver its first callback. Don't wait for it: start one frame
+            // into the glide and send that frame now.
+            glide?.start -= Self.frameTime
+            glide?.lastFrame -= Self.frameTime
+            step()
         }
         return nil
     }
@@ -177,73 +302,74 @@ final class MouseScroller {
 
     // MARK: Animation
 
-    private func step() {
-        guard scrolling else { return }
-        guard config().enabled else { cancelScroll(); return }
-        let now = CFAbsoluteTimeGetCurrent()
-        let dt = min(0.05, now - lastFrame)
-        lastFrame = now
-        let tau = Self.tau(config().smoothness)
-        let k = tau > 0 ? 1 - exp(-dt / tau) : 1
+    /// What the current glide still has to scroll.
+    private func remainingVector() -> (y: Double, x: Double) { glide.map { remainingVector(for: $0) } ?? (0, 0) }
 
-        var moveY = remainingY * k, moveX = remainingX * k
-        remainingY -= moveY
-        remainingX -= moveX
-        let done = abs(remainingY) < 0.4 && abs(remainingX) < 0.4
-        if done {
-            moveY += remainingY; moveX += remainingX
-            remainingY = 0; remainingX = 0
+    func step() {
+        guard var g = glide else {
+            if clock() >= idleUntil { stopFrames() }
+            return
         }
-        let totalY = moveY + carryY, totalX = moveX + carryX
-        let sendY = totalY.rounded(.towardZero), sendX = totalX.rounded(.towardZero)
-        carryY = totalY - sendY
-        carryX = totalX - sendX
-        if sendY != 0 || sendX != 0 { post(dy: sendY, dx: sendX) }
-        if done {
-            scrolling = false
-            stopFrames()
+        guard config().enabled else { cancelScroll(); return }
+        let now = clock()
+        let dt = max(now - g.lastFrame, 0.001)
+        let time = now - g.start
+        let done = time >= g.curve.duration
+        let value = done ? g.curve.distance : g.curve.value(at: time)
+        let share = g.curve.distance > 0 ? (value - g.lastValue) / g.curve.distance : 0
+        let deltaY = g.vector.y * share, deltaX = g.vector.x * share
+        let wasInDrag = g.lastValue >= g.curve.constantSpeedDistance
+        g.lastValue = value
+        g.lastFrame = now
+        g.speed = hypot(deltaY, deltaX) / dt
+
+        let wholeY = pixelY.whole(deltaY), wholeX = pixelX.whole(deltaX)
+        let left = remainingVector(for: g)
+        // Enough whole pixels already went out: nothing more would move.
+        let last = done || (pixelY.peek(left.y) == 0 && pixelX.peek(left.x) == 0)
+        // Momentum only once every pixel of the frame comes from the drag part, and not right after a tick.
+        let hint: ScrollOutput.Hint = now >= g.gestureUntil && wasInDrag ? .momentum : .gesture
+
+        if wholeY != 0 || wholeX != 0 {
+            output.emit(y: wholeY, x: wholeX, phase: g.started ? .continue : .start, hint: hint)
+            g.started = true
+        }
+        if last {
+            if g.started { output.finish() }
+            glide = nil
+            output.reset()
+            pixelY.reset(); pixelX.reset()
+            idleUntil = now + Self.linkIdle
+        } else {
+            glide = g
         }
     }
 
-    /// One frame of scrolling. A real wheel event carries the distance three ways (pixels, lines, fixed-point
-    /// lines) and apps read whichever they like, so fill in all three; a line is about 10 pixels.
-    private func post(dy: Double, dx: Double) {
-        guard let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
-                                  wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else { return }
-        let linesY = dy / 10 + lineCarryY, linesX = dx / 10 + lineCarryX
-        let wholeY = linesY.rounded(.towardZero), wholeX = linesX.rounded(.towardZero)
-        lineCarryY = linesY - wholeY
-        lineCarryX = linesX - wholeX
-        event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(dy))
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(dx))
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: Int64(wholeY))
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: Int64(wholeX))
-        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: dy / 10)
-        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: dx / 10)
-        event.flags = flags
-        event.setIntegerValueField(.eventSourceUserData, value: MouseFixService.marker)
-        event.post(tap: .cgSessionEventTap)
+    private func remainingVector(for g: Glide) -> (y: Double, x: Double) {
+        let left = g.curve.distance > 0 ? 1 - g.lastValue / g.curve.distance : 0
+        return (g.vector.y * left, g.vector.x * left)
     }
 
     // MARK: Helpers
 
-    /// Wheel clicks on one axis (axis 1 = vertical, 2 = horizontal), signed.
-    private static func ticks(_ event: CGEvent, axis: Int) -> Double {
-        let line = event.getIntegerValueField(axis == 1 ? .scrollWheelEventDeltaAxis1 : .scrollWheelEventDeltaAxis2)
-        if line != 0 { return Double(line) }
-        let point = event.getIntegerValueField(axis == 1 ? .scrollWheelEventPointDeltaAxis1 : .scrollWheelEventPointDeltaAxis2)
-        return Double(point.signum())
+    private static let timebase: mach_timebase_info = {
+        var info = mach_timebase_info()
+        mach_timebase_info(&info)
+        return info
+    }()
+
+    /// When the wheel actually turned, from the event's own timestamp (more accurate than when we got to it).
+    private static func seconds(of event: CGEvent) -> Double? {
+        guard event.timestamp > 0 else { return nil }
+        return Double(event.timestamp) * Double(timebase.numer) / Double(timebase.denom) / 1e9
     }
 
-    /// Seconds for the scroll to get ~63% of the way: higher = longer glide.
-    private static func tau(_ smoothness: String) -> Double {
-        switch smoothness {
-        case "low": 0.07
-        case "high": 0.2
-        case "off": 0
-        default: 0.12
-        }
+    /// One wheel tick on an axis (1 = vertical, 2 = horizontal): only the direction counts, not how far the system says it went.
+    private static func tick(_ event: CGEvent, axis: Int) -> Double {
+        let line = event.getIntegerValueField(axis == 1 ? .scrollWheelEventDeltaAxis1 : .scrollWheelEventDeltaAxis2)
+        if line != 0 { return Double(line.signum()) }
+        let point = event.getIntegerValueField(axis == 1 ? .scrollWheelEventPointDeltaAxis1 : .scrollWheelEventPointDeltaAxis2)
+        return Double(point.signum())
     }
 
     private static func mask(_ name: String) -> CGEventFlags {

@@ -5,16 +5,40 @@
 .field input[type=range] { accent-color: var(--accent); }
 .field .value { flex: none; width: 34px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .field.wide { grid-column: 1 / -1; }
+.field[hidden] { display: none; }
 .sub { grid-column: 1 / -1; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
 .pick { width: auto; padding: 4px 22px 4px 8px; -webkit-appearance: none; appearance: none; cursor: default;
   background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
   background-position: calc(100% - 11px) 52%, calc(100% - 7px) 52%; background-size: 4px 4px; background-repeat: no-repeat; }
 .pick option { background: #1c1c1e; }
-.rule { display: flex; align-items: center; gap: 8px; padding: 7px 9px; }
-.rule .which { flex: none; width: 84px; display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; }
-.rule .which svg { width: 14px; height: 14px; color: var(--muted); }
-.rule .opt { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.rule .opt span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.rule .opt select { width: 100%; }
+.button-layout { display: grid; grid-template-columns: 135px minmax(0, 1fr); gap: 8px; overflow: hidden; }
+.button-list { padding: 4px; min-width: 0; overflow-x: hidden; }
+.button-choice { flex: none; width: 100%; min-width: 0; border: 0; background: transparent; color: var(--fg); font: inherit; text-align: left; gap: 6px; }
+.button-choice svg { flex: none; width: 14px; height: 14px; color: var(--muted); }
+.button-editor { min-width: 0; gap: 6px; padding: 8px 10px; overflow-x: hidden; }
+.button-editor-header { flex: none; min-height: 24px; }
+.button-editor-header h2 { margin: 0; }
+.button-editor-header .nk-icon-btn { flex: none; width: 24px; height: 24px; }
+.button-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 14px; }
+.button-fields .opt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.button-fields .opt > span { font-size: 11px; line-height: 13px; color: var(--muted); }
+.button-fields .opt select { width: 100%; min-width: 0; min-height: 26px; }
+.buttons-empty { grid-column: 1 / -1; min-width: 0; padding: 8px; }
+.buttons-footer { flex: none; }
+.buttons-footer #learnHint { overflow: hidden; text-overflow: ellipsis; }
 .nk-icon-btn svg { width: 15px; height: 15px; }
+@media (max-width: 500px) {
+  .button-layout { grid-template-columns: 104px minmax(0, 1fr); gap: 6px; }
+  .button-editor { padding: 8px; }
+  .button-fields { column-gap: 8px; }
+}
+@media (max-width: 390px) {
+  .nk-root > header { flex-wrap: wrap; gap: 6px; }
+  .nk-root > header > .nk-fill { display: none; }
+  #preset { margin-left: auto; font-size: 11px; padding: 6px 8px; }
+  #view { margin-left: auto; }
+  .button-layout { grid-template-columns: 92px minmax(0, 1fr); }
+  .button-fields { grid-template-columns: minmax(0, 1fr); }
+  .button-choice { padding: 7px 6px; }
+}
 .learning { color: var(--accent); }

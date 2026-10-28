@@ -121,13 +121,20 @@ Mouse is an API v2 Store plugin under `store/plugins/mouse`, with its event-tap 
 universal helper. There is no in-app Mouse service or bundled Mouse tab. Build/install the Store package (or use
 `nook dev` with the built folder), approve its Accessibility/background declaration, then turn on its own Enable
 switch. Its controls send `nook.native.call('mouse.<method>', {args:[...]})`; events use `nook.native.on('mouse')`.
-Methods retain `state`, `set`, `setButton`, `removeButton`, `learn`, `openPrivacy`. Configuration retains smoothing,
-speed/acceleration, reverse/chatter, modifier choices and extra-button click/hold/drag mappings. State includes
-`config`, `trusted`, `running`, `learning`, `error`, `actions`.
-It is off by default. `set({enabled:true})` and `learn(true)` can request Accessibility; other edits do not prompt.
-The state result’s `error` reports event-tap failures. While enabled or learning, permission/tap availability is checked every
-two seconds and retried automatically. `mouse` notices cover startup, failure, recovery and learning; reload state
-after a notice. Each mutation returns the updated state. No native Settings pane is added.
+Methods retain `state`, `set`, `setButton`, `removeButton`, `learn`, `openPrivacy`, plus `applyPreset('defaults')`.
+The defaults preset restores source scrolling defaults (high smoothness, medium speed, reverse direction),
+Shift/Option/Control/Command wheel modifiers, and the middle/back/forward button layouts; it preserves `enabled`.
+`set` accepts `speedMode: "system"|"low"|"medium"|"high"|"custom"`. The engine speed tables are used for
+low/medium/high; custom retains Nook's numeric `speed` and `acceleration`. Existing settings without `speedMode`
+migrate to custom. `state.engine` and `bin/helper --probe` identify the Nook Mouse version and pinned source revision.
+`mouseActionUnavailable {action,message}` reports unavailable system shortcuts; no system shortcuts are rewritten.
+A button rule has `click`, `double`, `triple`, `hold` (action IDs), `drag` (`none`, `spaces`, `swipe`, `scroll`),
+and `scroll` (`none`, `horizontal`, `quick`, `precise`, `zoom`, `rotate`, `pinch`, `swipe`). `zoomModifier` selects
+wheel zoom by a modifier key. State includes `config`, `trusted`, `running`, `learning`, `error`, `actions`, `engine`.
+See `store/plugins/mouse/ENGINE-INTEGRATION.md` for source verification and adapter differences.
+
+`scrollStyle` is `trackpad` (default) or `classic`: trackpad style at high smoothness sends scrolling as a swipe-like gesture followed by
+momentum, which pages that snap to items (YouTube Shorts, CSS scroll-snap in browsers) wait for; classic sends plain pixel events.
 
 Rapid wheel reversals are preserved by default. `set({filterChatter:true})` opts into discarding opposite-direction
 ticks arriving within 100 ms of the last accepted tick; enable it only for a wheel that bounces. Disabling or ending

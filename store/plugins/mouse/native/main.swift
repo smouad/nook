@@ -16,7 +16,7 @@ enum PluginEvents {
 @main enum MouseHelper {
     static func main() {
         if CommandLine.arguments.contains("--probe") {
-            PluginEvents.send(["jsonrpc": "2.0", "method": "probe", "params": ["apiVersion": 2, "feature": "mouse", "eventTapStarted": false]])
+            PluginEvents.send(["jsonrpc": "2.0", "method": "probe", "params": ["apiVersion": 2, "feature": "mouse", "eventTapStarted": false, "engine": MouseEngineProvenance.json]])
             return
         }
         guard ProcessInfo.processInfo.environment["NOOK_PLUGIN_ID"] == "mouse", ProcessInfo.processInfo.environment["NOOK_DATA_DIR"] != nil else {

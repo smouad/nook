@@ -128,9 +128,9 @@
   {
     "id": "mouse",
     "name": "Mouse",
-    "description": "Smooth discrete mouse wheels and remap extra buttons with an isolated Swift helper. Accessibility required; disabled until you turn it on.",
+    "description": "Smooth scrolling, precise wheel controls and customizable mouse button actions. Accessibility required; disabled until you turn it on.",
     "author": "YusufLisawi",
-    "version": "2.0.0",
+    "version": "2.1.1",
     "symbol": "computermouse.fill",
     "tags": [
       "mouse",
@@ -139,10 +139,10 @@
     ],
     "screenshots": [],
     "path": "plugins/mouse",
-    "sha": "d28641c9bb55ce7559564bdb270dd1da9a2463ff",
-    "sha256": "2076e17937a87fb9ae29be991a3e42ae8becf3b957acc1ef0739a88767b72b7a",
+    "sha": "f7cd4fe211be8fbc9f724a2d98a26f63a9c2644a",
+    "sha256": "2b226afd00a1bd15eb7088a4002acca5cf5b298978591f2028d07b96f89a9e26",
     "default": true,
-    "updatedAt": "2026-10-21T20:19:40Z"
+    "updatedAt": "2026-10-28T12:58:47Z"
   },
   {
     "id": "windows",

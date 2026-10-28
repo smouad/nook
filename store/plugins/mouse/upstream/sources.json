@@ -1,0 +1,117 @@
+{
+  "repository": "https://github.com/noah-nuebling/mac-mouse-fix",
+  "version": "3.1.0",
+  "revision": "603646cdb5200eb9d0db0afdb5967c7ec41c5de0",
+  "files": [
+    {
+      "path": "Helper/Core/Actions/SymbolicHotKeys.h",
+      "sha256": "443ffd18e5a6a065fb4efafd34b8f54e91ad49f409e8f7b6e0098597bfd3707e",
+      "compiled": false
+    },
+    {
+      "path": "Helper/Core/Actions/SymbolicHotKeys.m",
+      "sha256": "c73069ce30b752372f0c785c98e7b3247c1dc3ce1e88b19a4e50389807ef24c1",
+      "compiled": false
+    },
+    {
+      "path": "Helper/Core/Buttons/ClickCycle.swift",
+      "sha256": "7a95fb3a3284c71dadd613ce289e678b53c3b459c020c81543d683ba51ea840d",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Config/ScrollConfig.swift",
+      "sha256": "6cc63f7e930aee972e0d66c8e9805f78ed5aea48db09f33f5fc218fd5e921e74",
+      "compiled": false
+    },
+    {
+      "path": "Helper/Core/Config/ScrollConfigObjC.h",
+      "sha256": "717d7792d2eb947766ffac6cbd55a1a2c8c7b432bb6cd3d0c090f23344959ca2",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Scroll/ScrollAnalyzer.h",
+      "sha256": "9036818c4d56570d8fccb2ffa57444c07570754739d48d67ef00da5ab5938d46",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Scroll/ScrollAnalyzer.m",
+      "sha256": "6063fbdb3491db84fdd035a7617434412abb553da5c51f4091b468893c6909cd",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Smoothing/CircularBuffer.h",
+      "sha256": "3f04cd847352e998808be2c68c7f77e311f4b72a800154a73077cbbc87801ab3",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Smoothing/CircularBuffer.m",
+      "sha256": "1fdc3a92fe8a8b84afe0cb59ef08853dc385226c5028acb9d4fe9d403b5145aa",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Smoothing/RollingAverage.swift",
+      "sha256": "4d93d507214b29b39ddef15f9e373f1b1f2b9c6b3117469821c80c76dce74520",
+      "compiled": true
+    },
+    {
+      "path": "Helper/Core/Smoothing/Smoother.swift",
+      "sha256": "2037fd894e815e0c0165bfe4fbc383e2adf8c817438469ab67ca5c88ecc86985",
+      "compiled": true
+    },
+    {
+      "path": "License",
+      "sha256": "d5bee2d51b1dce8e3afb19ae200c4f60d076e8eb9ab1ba371b742067e6511c5a",
+      "compiled": false
+    },
+    {
+      "path": "Shared/Config/default_config.plist",
+      "sha256": "a5bc72f6ad0bfbe95af241866d0b371db109e569fbbbe9c30498fd2c4d71bdd6",
+      "compiled": false
+    },
+    {
+      "path": "Shared/Math/Curves/AccelerationBezier.swift",
+      "sha256": "0fc6e46f516ae6d638c871cc21026e9c1e5a94b5b508814d0088110c54daf20c",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/Bezier.swift",
+      "sha256": "d9d9e2ea79d1098a5c5256ffe1f51dfb22f5391bf1f30998b57988d8489e969b",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/BezierCappedAccelerationCurve.swift",
+      "sha256": "a426eb3dcc9befac39af245e74ad440b408cea2e55b174681beea142918de15f",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/Curve.swift",
+      "sha256": "45c2eaf9601efbd1b3ee0677a8ee6532ff2147cfd5f980eff9e3e111c2b86981",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/DragCurve.swift",
+      "sha256": "4e4d918c10cdd99e198b0c2f17a3755bfc5273877077ceaea14b3c8ef0e13541",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/HybridCurves.swift",
+      "sha256": "ba5a42a6ca5fad261c9a4fac1cbea110a7e111cf30b534220bddd67aa34f2c79",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/Line.swift",
+      "sha256": "433052cab80570debcbe360a18408091097ecc2f41adff73cfcf2c25cf47c91a",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Curves/ScrollSpeedupCurve.swift",
+      "sha256": "2adf061f7f5676913c4233938cdfd72c3d2cbbd2ec685a5523837e25eb61d51a",
+      "compiled": true
+    },
+    {
+      "path": "Shared/Math/Math.swift",
+      "sha256": "3da5dd7dd7d49cdfe5e8496431a9af9fbbc47154f4a84b6e22f035fbbba604ea",
+      "compiled": true
+    }
+  ]
+}

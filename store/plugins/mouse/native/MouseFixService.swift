@@ -93,12 +93,17 @@ final class MouseFixService {
                 return reply(nil, "Only the extra buttons (middle, back, forward…) can be remapped")
             }
             var next = config
-            var json = next.buttons[button].flatMap { try? JSONEncoder().encode($0) }
-                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? ["click": "none", "hold": "none", "drag": "none"]
+            let current = next.buttons[button] ?? MouseConfig.ButtonRule()
+            var json = (try? JSONEncoder().encode(current)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
             for (k, v) in (args.dropFirst().first as? [String: Any]) ?? [:] where json[k] != nil { json[k] = v }
             if let data = try? JSONSerialization.data(withJSONObject: json), let rule = try? JSONDecoder().decode(MouseConfig.ButtonRule.self, from: data) {
                 next.buttons[button] = rule
             }
+            next.normalize()
+            config = next
+        case "applyPreset":
+            guard let name = args.first as? String, name == "defaults" || name == "mmf" else { return reply(nil, "Unknown preset") }
+            var next = config.applyingMMFDefaults()
             next.normalize()
             config = next
         case "removeButton":
@@ -138,6 +143,7 @@ final class MouseFixService {
             "error": lock.withLock { _error } as Any? ?? NSNull(),
             "learning": learning,
             "actions": MouseActions.all.map { ["id": $0.id, "label": $0.label] },
+            "engine": MouseEngineProvenance.json,
         ]
     }
 
@@ -169,18 +175,17 @@ private final class TapThread: Thread {
     private let loopLock = NSLock()
     private let exited = DispatchSemaphore(value: 0)
 
-    // Button gesture in progress (the button is held and swallowed until it's released)
-    private var active: Int64?
-    private var rule = MouseConfig.ButtonRule()
-    private var holdTimer: CFRunLoopTimer?
-    private var holdFired = false
-    private var dragFired = false
-    private var travelled = CGPoint.zero
     private var balance = MouseButtonBalance()
+    private let buttons = ButtonEngine() // decides what presses, releases and drags mean
+    private struct TimerKey: Hashable { var button: Int64; var kind: ButtonEngine.Timer }
+    private var timers: [TimerKey: CFRunLoopTimer] = [:]
     private var frozen = false // we detached the pointer from the mouse and must give it back
-
-    private static let holdDelay = 0.4
-    private static let dragDistance = 50.0
+    private let dragScroll = ScrollOutput() // a button drag that scrolls
+    private var dragPixels = (y: BiasedSubPixelator(), x: BiasedSubPixelator())
+    private var dragScrollSign = 1.0
+    private let swipe = DockSwipe()
+    private var swipeScale = 0.0
+    private var swipeNatural = true
 
     init(service: MouseFixService) {
         self.service = service
@@ -206,7 +211,7 @@ private final class TapThread: Thread {
                 if wasDraining { service.report(running: true) }
             }
             if !wanted || !service.config.enabled {
-                endGesture()
+                cancelButtons()
                 scroller.cancelScroll()
             }
             if balance.canStop { CFRunLoopStop(CFRunLoopGetCurrent()) }
@@ -251,7 +256,7 @@ private final class TapThread: Thread {
         if !isCancelled && !balance.canStop { CFRunLoopRun() }
 
         service.report(running: false)
-        endGesture()
+        cancelButtons()
         scroller.stop()
         CGEvent.tapEnable(tap: tap, enable: false)
         CFRunLoopRemoveSource(runLoop, source, .commonModes)
@@ -263,7 +268,7 @@ private final class TapThread: Thread {
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            cancelGesture()
+            cancelButtons()
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return pass
         }
@@ -273,13 +278,19 @@ private final class TapThread: Thread {
         // Observe settings here too: a release may beat the queued reconfiguration block.
         if !wanted, !balance.draining {
             balance.setWanted(false)
-            endGesture()
+            cancelButtons()
             scroller.cancelScroll()
         }
 
         switch type {
         case .scrollWheel:
-            return config.enabled && !balance.draining ? scroller.handle(event) : pass
+            guard config.enabled, !balance.draining else { return pass }
+            // A held button that maps the wheel decides what it does (zoom, sideways, …), and counts as its gesture.
+            if let held = buttons.scrollWhileHeld() {
+                perform(held.effects)
+                return scroller.handle(event, held: held.mode)
+            }
+            return scroller.handle(event)
 
         case .otherMouseDown:
             let button = event.getIntegerValueField(.mouseEventButtonNumber)
@@ -292,21 +303,19 @@ private final class TapThread: Thread {
             }
             guard config.enabled, let rule = config.buttons[String(button)], rule.isActive,
                   balance.suppress(button) else { return pass }
-            begin(button: button, rule: rule)
+            perform(buttons.press(button, rule: rule))
             return nil
 
         case .otherMouseDragged:
             let button = event.getIntegerValueField(.mouseEventButtonNumber)
             guard balance.suppressed.contains(button) else { return pass }
-            if button == active {
-                drag(dx: event.getDoubleValueField(.mouseEventDeltaX), dy: event.getDoubleValueField(.mouseEventDeltaY))
-            }
+            perform(buttons.drag(button, dx: event.getDoubleValueField(.mouseEventDeltaX), dy: event.getDoubleValueField(.mouseEventDeltaY)))
             return nil
 
         case .otherMouseUp:
             let button = event.getIntegerValueField(.mouseEventButtonNumber)
             guard balance.release(button) else { return pass }
-            if button == active { release() }
+            perform(buttons.release(button))
             if balance.canStop { CFRunLoopStop(CFRunLoopGetCurrent()) }
             return nil
 
@@ -317,67 +326,86 @@ private final class TapThread: Thread {
 
     // MARK: Button gestures
 
-    private func begin(button: Int64, rule: MouseConfig.ButtonRule) {
-        cancelGesture()
-        active = button
-        self.rule = rule
-        holdFired = false
-        dragFired = false
-        travelled = .zero
-        if rule.drag != "none" {
-            CGAssociateMouseAndMouseCursorPosition(0) // pointer stays put while you drag
-            frozen = true
-        }
-        if rule.hold != "none" {
-            let timer = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + Self.holdDelay, 0, 0, 0) { [weak self] _ in
-                guard let self, service.config.enabled, !balance.draining,
-                      active != nil, !dragFired, !holdFired else { return }
-                holdFired = true
-                MouseActions.run(self.rule.hold)
+    /// Carry out what the button engine decided.
+    private func perform(_ effects: [ButtonEngine.Effect]) {
+        for effect in effects {
+            switch effect {
+            case let .run(action):
+                if service.config.enabled, !balance.draining { MouseActions.run(action) }
+            case let .replay(button, clicks):
+                MouseActions.click(button: button, count: clicks) // a click the button had no action for: give it back
+            case let .timer(button, kind, after):
+                let key = TimerKey(button: button, kind: kind)
+                if let old = timers.removeValue(forKey: key) { CFRunLoopTimerInvalidate(old) }
+                guard let after else { continue }
+                let timer = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + after, 0, 0, 0) { [weak self] _ in
+                    guard let self else { return }
+                    timers[key] = nil
+                    guard service.config.enabled, !balance.draining else { return }
+                    perform(buttons.timerFired(button, kind))
+                }
+                CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, .commonModes)
+                timers[key] = timer
+            case let .freezePointer(on):
+                if on, !frozen {
+                    CGAssociateMouseAndMouseCursorPosition(0) // the pointer stays put while you drag
+                    frozen = true
+                } else if !on, frozen {
+                    CGAssociateMouseAndMouseCursorPosition(1)
+                    frozen = false
+                }
+            case let .scroll(dx, dy, phase):
+                scrollFromDrag(dx: dx, dy: dy, phase: phase)
+            case let .swipe(axis, dx, dy, phase):
+                swipeFromDrag(axis: axis, dx: dx, dy: dy, phase: phase)
             }
-            CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, .commonModes)
-            holdTimer = timer
         }
     }
 
-    private func drag(dx: Double, dy: Double) {
-        guard rule.drag == "spaces", !dragFired, !holdFired else { return }
-        travelled.x += dx
-        travelled.y += dy
-        guard max(abs(travelled.x), abs(travelled.y)) >= Self.dragDistance else { return }
-        dragFired = true
-        // Like a three-finger swipe: right → the Space on the left, up → Mission Control, down → App Exposé.
-        if abs(travelled.x) > abs(travelled.y) {
-            MouseActions.run(travelled.x > 0 ? "spaceLeft" : "spaceRight")
-        } else {
-            MouseActions.run(travelled.y < 0 ? "missionControl" : "appExpose")
+    /// A button drag acting as two fingers on a trackpad: content follows the pointer's movement.
+    private func scrollFromDrag(dx: Double, dy: Double, phase: ButtonEngine.ScrollPhase) {
+        switch phase {
+        case .began:
+            let natural = (CFPreferencesCopyAppValue("com.apple.swipescrolldirection" as CFString, kCFPreferencesAnyApplication) as? Bool) ?? true
+            dragScroll.reset()
+            dragScroll.swipe = true
+            dragScroll.invertedFromDevice = natural
+            dragPixels = (BiasedSubPixelator(), BiasedSubPixelator())
+            dragScrollSign = natural ? 1 : -1
+            dragScroll.emit(y: dragPixels.y.whole(dy * dragScrollSign), x: dragPixels.x.whole(dx * dragScrollSign), phase: .start, hint: .gesture)
+        case .changed:
+            let y = dragPixels.y.whole(dy * dragScrollSign), x = dragPixels.x.whole(dx * dragScrollSign)
+            if y != 0 || x != 0 { dragScroll.emit(y: y, x: x, phase: .continue, hint: .gesture) }
+        case .ended:
+            dragScroll.finish()
+            dragScroll.reset()
         }
     }
 
-    private func release() {
-        let fired = holdFired || dragFired
-        let rule = rule
-        let button = active ?? 2
-        endGesture()
-        guard !fired else { return }
-        if rule.click != "none" {
-            MouseActions.run(rule.click)
-        } else {
-            MouseActions.click(button: button) // a plain click on a button we only watched for hold/drag: give it back
+    /// A button drag acting as three fingers on a trackpad: sideways moves between Spaces, up/down into Mission Control.
+    private func swipeFromDrag(axis: ButtonEngine.SwipeAxis, dx: Double, dy: Double, phase: ButtonEngine.SwipePhase) {
+        if phase == .began {
+            let at = CGEvent(source: nil)?.location ?? .zero
+            var id = CGDirectDisplayID(), count: UInt32 = 0
+            CGGetDisplaysWithPoint(at, 1, &id, &count)
+            let size = count > 0 ? CGDisplayBounds(id).size : CGSize(width: 1440, height: 900)
+            swipeScale = (axis == .horizontal
+                ? DockSwipe.Scale.horizontal(screenWidth: Double(size.width), spaces: count > 0 ? SpaceCount.spaces(on: id) ?? 1 : 1)
+                : DockSwipe.Scale.vertical(screenHeight: Double(size.height)))
+            swipeNatural = (CFPreferencesCopyAppValue("com.apple.swipescrolldirection" as CFString, kCFPreferencesAnyApplication) as? Bool) ?? true
         }
+        let flip = swipeNatural ? 1.0 : -1.0 // the drag is flipped for "unnatural" scrolling
+        let delta = axis == .horizontal ? -dx * flip * swipeScale : dy * flip * swipeScale
+        let gesture: TrackpadGestures.Phase = phase == .began ? .began : phase == .changed ? .changed : phase == .ended ? .ended : .cancelled
+        swipe.post(delta: delta, kind: axis == .horizontal ? .horizontal : .vertical, phase: gesture, inverted: swipeNatural)
     }
 
-    /// Abandon a gesture whose button is still down: its release must not reach apps without the press.
-    private func cancelGesture() {
-        // Balance owns all suppressed presses independently of the current gesture.
-        endGesture()
-    }
-
-    /// Forget the gesture and give the pointer back.
-    private func endGesture() {
-        if let holdTimer { CFRunLoopTimerInvalidate(holdTimer) }
-        holdTimer = nil
-        active = nil
+    /// Abandon every button in progress: stop timers, reattach the pointer, end a drag scroll. Presses already
+    /// swallowed keep their releases owed through `balance`.
+    private func cancelButtons() {
+        perform(buttons.cancelAll())
+        for timer in timers.values { CFRunLoopTimerInvalidate(timer) }
+        timers.removeAll()
         if frozen {
             CGAssociateMouseAndMouseCursorPosition(1)
             frozen = false

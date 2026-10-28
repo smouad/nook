@@ -20,20 +20,11 @@ struct MouseButtonBalance {
     mutating func release(_ button: Int64) -> Bool { suppressed.remove(button) != nil }
 }
 
-/// Reversing one axis discards its old glide and fractional pixels, never the other axis.
 /// Optional chatter filtering is deliberately off by default: fast reversals can be intentional.
 enum MouseWheelReversal {
     static func shouldFilter(dy: Double, dx: Double, remainingY: Double, remainingX: Double,
                              gap: TimeInterval, filterChatter: Bool) -> Bool {
         filterChatter && gap >= 0 && gap < 0.1 &&
             ((dy != 0 && remainingY * dy < 0) || (dx != 0 && remainingX * dx < 0))
-    }
-
-    static func prepare(delta: Double, remaining: inout Double, carry: inout Double, lineCarry: inout Double) {
-        if delta != 0, remaining * delta < 0 {
-            remaining = 0
-            carry = 0
-            lineCarry = 0
-        }
     }
 }

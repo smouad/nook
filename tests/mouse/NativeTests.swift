@@ -4,6 +4,8 @@ import AppKit
 struct MouseTests {
     static func main() throws {
         var checks = 0
+        checks += ActionTests.run()
+        checks += ScrollerTests.run()
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             precondition(condition(), message)
             checks += 1
@@ -66,17 +68,17 @@ struct MouseTests {
                                                       remainingX: 0, gap: gap, filterChatter: true) == (gap < 0.1),
                       "Opt-in chatter filter has an explicit window")
             }
-            var remaining = sign * 100, carry = sign * 0.9, lines = sign * 0.3
-            MouseWheelReversal.prepare(delta: -sign, remaining: &remaining, carry: &carry, lineCarry: &lines)
-            check(remaining == 0 && carry == 0 && lines == 0, "Reversal clears old glide and fractions")
-            remaining += -sign * 70
-            MouseWheelReversal.prepare(delta: -sign, remaining: &remaining, carry: &carry, lineCarry: &lines)
-            check(remaining == -sign * 70, "Same direction keeps its pool")
         }
+        scrollChecks { condition, message in check(condition, message) }
+        buttonChecks { condition, message in check(condition, message) }
         let oldConfig = try JSONDecoder().decode(MouseConfig.self, from: Data("{\"enabled\":true}".utf8))
         check(oldConfig.enabled && !oldConfig.filterChatter, "Existing preferences opt out of filtering")
         check(oldConfig.merging(["filterChatter": true])?.filterChatter == true, "Chatter option merges through bridge settings")
         check(oldConfig.merging(["filterChatter": "bad"]) == nil, "Invalid filter type rejects")
+        check(oldConfig.scrollStyle == "trackpad", "Existing preferences get trackpad-style scrolling")
+        check(oldConfig.merging(["scrollStyle": "classic"])?.scrollStyle == "classic", "Scroll style merges through bridge settings")
+        check(oldConfig.merging(["scrollStyle": "bogus"])?.scrollStyle == "trackpad", "Unknown scroll style falls back")
+        check(oldConfig.merging(["scrollStyle": 3]) == nil, "Invalid scroll style type rejects")
 
         // Call the actual hotkey processor with in-memory events. No tap installation or event posting.
         let hotkeys = HotkeyMonitor()
